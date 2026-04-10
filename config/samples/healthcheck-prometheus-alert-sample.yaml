@@ -1,0 +1,41 @@
+# Sample HealthCheck using Prometheus alert labels
+#
+# Prerequisites:
+# 1. Prometheus instance accessible from the cluster
+# 2. (Optional) Create a secret with Prometheus credentials if authentication is required:
+#    kubectl create secret generic prometheus-credentials \
+#      --from-literal=token=YOUR_BEARER_TOKEN
+#    # OR for basic auth:
+#    kubectl create secret generic prometheus-credentials \
+#      --from-literal=username=YOUR_USERNAME \
+#      --from-literal=password=YOUR_PASSWORD
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: prometheus-credentials
+  namespace: default
+type: Opaque
+stringData:
+  # Use bearer token authentication
+  token: "YOUR_PROMETHEUS_BEARER_TOKEN"
+  # OR use basic authentication (comment out token if using this)
+  # username: "YOUR_USERNAME"
+  # password: "YOUR_PASSWORD"
+---
+apiVersion: kuberik.com/v1alpha1
+kind: HealthCheck
+metadata:
+  name: my-prometheus-alert
+  namespace: default
+  annotations:
+    # Required: The Prometheus server URL
+    healthcheck.kuberik.com/prometheus-url: "http://prometheus-server:9090"
+    # Required: Alert label selector (comma-separated key=value pairs)
+    healthcheck.kuberik.com/prometheus-alert-labels: "alertname=HighErrorRate,severity=critical"
+    # Optional: Secret containing bearer token or username/password
+    # healthcheck.kuberik.com/prometheus-credentials-secret: "prometheus-credentials"
+    # Optional: How often to poll Prometheus (default: 30s, minimum: 5s)
+    # healthcheck.kuberik.com/requeue-interval: "60s"
+spec:
+  class: prometheus-alert
