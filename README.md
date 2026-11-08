@@ -110,6 +110,39 @@ the '--force' flag and manually ensure that any custom configuration
 previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
 is manually re-applied afterwards.
 
+## Observations
+
+`prometheus-alert` HealthChecks also write one typed entry to `status.observations` (requires a rollout-controller that has the field), which the dashboard draws as a figure. Status and message are unchanged. The controller reads the alerts' evaluated values from `GET /api/v1/rules?type=alert`, filtered by the same `prometheus-alert-labels`; if that call fails, observations degrade but the status is still reported.
+
+| Annotation | Meaning |
+|---|---|
+| `healthcheck.kuberik.com/observation-limit` | The alert's limit, a plain decimal (`0.05`, no exponent). Prometheus does not expose it, so declare it here. |
+| `healthcheck.kuberik.com/observation-direction` | `Above` or `Below`: which side of the limit is bad. Required with the limit. |
+| `healthcheck.kuberik.com/observation-unit` | Optional unit (`Percent`, `Ratio`, `Milliseconds`, ...). |
+| `healthcheck.kuberik.com/observation-name` | Optional name; defaults to the `alertname` label. |
+
+What gets written:
+
+- **Threshold**: a limit is known and at least one matching alert is pending or firing. `value` is the worst evaluated value across matching alerts (highest for `Above`, lowest for `Below`); `healthy` is false while any is firing, true when only pending. The limit comes from the annotations, or, when they are absent, from a trivial rule expression (`<expr> > N`, `>=`, `<`, `<=`; compound conditions, `==`/`!=`, `bool` and comparisons between two series are not inferred, and matching rules must agree on limit and direction).
+- **State** (name and `healthy` only): the limit is declared by annotation but no alert is active, so there is no value; `healthy` is true unless the ALERTS lookup saw a firing alert.
+- **Count** named `firing alerts`: no limit is declared or inferable (or the annotations are invalid). `healthy` is true when no alert is firing; pending alerts are not counted.
+- `observedTime` changes only when the observation does.
+
+```yaml
+apiVersion: kuberik.com/v1alpha1
+kind: HealthCheck
+metadata:
+  name: error-rate
+  annotations:
+    healthcheck.kuberik.com/prometheus-url: http://prometheus.monitoring:9090
+    healthcheck.kuberik.com/prometheus-alert-labels: alertname=HighErrorRate,severity=critical
+    healthcheck.kuberik.com/observation-limit: "0.05"
+    healthcheck.kuberik.com/observation-direction: Above
+    healthcheck.kuberik.com/observation-name: error rate
+spec:
+  class: prometheus-alert
+```
+
 ## Contributing
 // TODO(user): Add detailed information on how you would like others to contribute to this project
 

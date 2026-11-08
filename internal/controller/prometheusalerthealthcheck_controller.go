@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -236,12 +237,28 @@ func (r *PrometheusAlertHealthCheckReconciler) Reconcile(ctx context.Context, re
 	// Check if any alert is firing in the range
 	healthStatus, message := r.evaluateAlertResult(result, alertLabels)
 
+	// Observations are best effort: a failing rules lookup or bad annotation
+	// degrades them, never the status.
+	var snap *alertSnapshot
+	if rq, ok := querier.(RuleQuerier); ok {
+		if rules, rerr := rq.QueryRules(ctx, prometheusURL, auth); rerr != nil {
+			log.Error(rerr, "Failed to query Prometheus rules; observations degrade to ALERTS only")
+		} else {
+			matched := matchAlerts(rules, alertLabels)
+			snap = &matched
+		}
+	}
+	observations, cfgErr := alertObservations(healthCheck.Annotations, alertLabels, snap, result, healthStatus, metav1.NewTime(now))
+	if cfgErr != nil {
+		log.Error(cfgErr, "Ignoring observation limit annotations")
+	}
+
 	log.Info("Evaluated Prometheus alerts",
 		"query", query,
 		"healthStatus", healthStatus,
 		"resultCount", len(result.Data.Result))
 
-	return r.updateHealthCheckStatus(ctx, healthCheck, healthStatus, message)
+	return r.updateHealthCheckStatus(ctx, healthCheck, healthStatus, message, observations...)
 }
 
 // getPrometheusURL extracts the Prometheus URL from HealthCheck annotations
@@ -409,7 +426,7 @@ func (r *PrometheusAlertHealthCheckReconciler) setLastScrapeTime(ctx context.Con
 }
 
 // updateHealthCheckStatus updates the HealthCheck status
-func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *kuberikcomv1alpha1.HealthCheck, newStatus kuberikcomv1alpha1.HealthStatus, newMessage string) (ctrl.Result, error) {
+func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *kuberikcomv1alpha1.HealthCheck, newStatus kuberikcomv1alpha1.HealthStatus, newMessage string, observations ...observation) (ctrl.Result, error) {
 	now := metav1.Now()
 
 	// Re-fetch to avoid conflicts after annotation update
@@ -433,6 +450,12 @@ func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx conte
 	// Update LastErrorTime if unhealthy
 	if newStatus == kuberikcomv1alpha1.HealthStatusUnhealthy {
 		latest.Status.LastErrorTime = &now
+	}
+
+	// observations is nil on error paths: keep the previous ones then.
+	if observations != nil {
+		merged, _ := mergeObservations(latest.Status.Observations, sortObservations(observations))
+		latest.Status.Observations = merged
 	}
 
 	// Update the status
@@ -528,7 +551,7 @@ func (r *PrometheusAlertHealthCheckReconciler) healthCheckReferencesSecret(healt
 // SetupWithManager sets up the controller with the Manager.
 func (r *PrometheusAlertHealthCheckReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&kuberikcomv1alpha1.HealthCheck{}).
+		For(&kuberikcomv1alpha1.HealthCheck{}, builder.WithPredicates(ignoreObservationOnlyUpdates())).
 		Watches(
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.findHealthChecksForSecret),

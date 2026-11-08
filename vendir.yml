@@ -3,6 +3,7 @@ kind: Config
 directories:
   - path: vendir/crds
     contents:
+      # DEV-ONLY: unreleased status.observations CRD; swap back to the released rollout-controller.
       - path: kuberik
         directory:
-          path: ../rollout-controller/config/crd/bases
+          path: ../../.worktrees/rollout-controller-observations/config/crd/bases
