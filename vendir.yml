@@ -4,5 +4,8 @@ directories:
   - path: vendir/crds
     contents:
       - path: kuberik
-        directory:
-          path: ../rollout-controller/config/crd/bases
+        git:
+          url: https://github.com/kuberik/rollout-controller
+          ref: v0.11.0
+          subPath: config/crd/bases
+        newRootPath: .

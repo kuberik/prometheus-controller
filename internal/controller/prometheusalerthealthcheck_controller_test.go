@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -44,6 +46,123 @@ func (m *MockAlertQuerier) QueryAlerts(ctx context.Context, prometheusURL, query
 	}
 	return m.Response, nil
 }
+
+var _ = Describe("PrometheusAlertHealthCheck observations", func() {
+	var (
+		ctx        = context.Background()
+		server     *httptest.Server
+		rulesJSON  string
+		namespace  string
+		hcName     = "obs-healthcheck"
+		reconciler *PrometheusAlertHealthCheckReconciler
+	)
+
+	BeforeEach(func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/v1/query_range":
+				_, _ = fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"alertname":"HighErrorRate","alertstate":"firing","severity":"critical"},"values":[[1,"1"]]}]}}`)
+			case "/api/v1/rules":
+				Expect(r.URL.Query().Get("type")).To(Equal("alert"))
+				_, _ = fmt.Fprint(w, rulesJSON)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		rulesJSON = `{"status":"success","data":{"groups":[{"rules":[{"name":"HighErrorRate","query":"rate(errors[5m]) > 0.05","type":"alerting","labels":{"severity":"critical"},"alerts":[{"labels":{"alertname":"HighErrorRate","severity":"critical","pod":"a"},"state":"firing","value":"1.2e-01"},{"labels":{"alertname":"HighErrorRate","severity":"critical","pod":"b"},"state":"firing","value":"7e-02"}]}]}]}}`
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "obs-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+		reconciler = &PrometheusAlertHealthCheckReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AlertQuerier: &DefaultAlertQuerier{}}
+	})
+
+	AfterEach(func() {
+		server.Close()
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	reconcileWith := func(extra map[string]string) *kuberikcomv1alpha1.HealthCheck {
+		annotations := map[string]string{
+			AnnotationPrometheusURL:         server.URL,
+			AnnotationPrometheusAlertLabels: "alertname=HighErrorRate,severity=critical",
+		}
+		for k, v := range extra {
+			annotations[k] = v
+		}
+		hc := &kuberikcomv1alpha1.HealthCheck{
+			ObjectMeta: metav1.ObjectMeta{Name: hcName, Namespace: namespace, Annotations: annotations},
+			Spec:       kuberikcomv1alpha1.HealthCheckSpec{Class: ptr.To(HealthCheckClassPrometheusAlert)},
+		}
+		Expect(k8sClient.Create(ctx, hc)).To(Succeed())
+		key := types.NamespacedName{Name: hcName, Namespace: namespace}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, key, hc)).To(Succeed())
+		return hc
+	}
+
+	It("writes a Threshold with the worst evaluated value when the limit is annotated", func() {
+		hc := reconcileWith(map[string]string{
+			AnnotationObservationLimit: "0.05", AnnotationObservationDirection: "Above", AnnotationObservationUnit: "Ratio",
+		})
+		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
+		Expect(hc.Status.Observations).To(HaveLen(1))
+		o := hc.Status.Observations[0]
+		Expect(o.Name).To(Equal("HighErrorRate"))
+		Expect(o.Kind).To(Equal(kuberikcomv1alpha1.ObservationKindThreshold))
+		Expect(o.Value).To(Equal("0.12"))
+		Expect(o.Limit).To(Equal("0.05"))
+		Expect(o.Direction).To(Equal(kuberikcomv1alpha1.ObservationDirectionAbove))
+		Expect(o.Unit).To(Equal("Ratio"))
+		Expect(*o.Healthy).To(BeFalse())
+		Expect(o.ObservedTime).NotTo(BeNil())
+	})
+
+	It("writes a Count of firing alerts when the rule is not a trivial threshold", func() {
+		rulesJSON = `{"status":"success","data":{"groups":[{"rules":[{"name":"HighErrorRate","query":"a > 1 and b > 2","type":"alerting","labels":{"severity":"critical"},"alerts":[{"labels":{"alertname":"HighErrorRate","severity":"critical"},"state":"firing","value":"1e+00"}]}]}]}}`
+		hc := reconcileWith(nil)
+		Expect(hc.Status.Observations).To(HaveLen(1))
+		o := hc.Status.Observations[0]
+		Expect(o.Name).To(Equal("firing alerts"))
+		Expect(o.Kind).To(Equal(kuberikcomv1alpha1.ObservationKindCount))
+		Expect(o.Value).To(Equal("1"))
+		Expect(*o.Healthy).To(BeFalse())
+	})
+
+	It("infers the Threshold from a simple rule expression without annotations", func() {
+		hc := reconcileWith(nil)
+		o := hc.Status.Observations[0]
+		Expect(o.Kind).To(Equal(kuberikcomv1alpha1.ObservationKindThreshold))
+		Expect(o.Value).To(Equal("0.12"))
+		Expect(o.Limit).To(Equal("0.05"))
+	})
+
+	It("keeps observedTime stable across an unchanged re-reconcile", func() {
+		hc := reconcileWith(nil)
+		first := hc.Status.Observations[0].ObservedTime.DeepCopy()
+		time.Sleep(1100 * time.Millisecond)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: hcName, Namespace: namespace}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: hcName, Namespace: namespace}, hc)).To(Succeed())
+		Expect(hc.Status.Observations[0].ObservedTime.Equal(first)).To(BeTrue())
+	})
+
+	It("still reports status and a Count when the rules API fails", func() {
+		server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v1/rules" {
+				http.Error(w, "nope", http.StatusInternalServerError)
+				return
+			}
+			_, _ = fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[]}}`)
+		})
+		hc := reconcileWith(nil)
+		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusHealthy))
+		Expect(hc.Status.Observations).To(HaveLen(1))
+		Expect(hc.Status.Observations[0].Kind).To(Equal(kuberikcomv1alpha1.ObservationKindCount))
+		Expect(hc.Status.Observations[0].Value).To(Equal("0"))
+	})
+})
 
 var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 	Context("When reconciling a HealthCheck with class prometheus-alert", func() {
