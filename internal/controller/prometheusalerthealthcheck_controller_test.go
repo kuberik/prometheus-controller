@@ -62,10 +62,10 @@ var _ = Describe("PrometheusAlertHealthCheck observations", func() {
 			w.Header().Set("Content-Type", "application/json")
 			switch r.URL.Path {
 			case "/api/v1/query_range":
-				fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"alertname":"HighErrorRate","alertstate":"firing","severity":"critical"},"values":[[1,"1"]]}]}}`)
+				_, _ = fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"alertname":"HighErrorRate","alertstate":"firing","severity":"critical"},"values":[[1,"1"]]}]}}`)
 			case "/api/v1/rules":
 				Expect(r.URL.Query().Get("type")).To(Equal("alert"))
-				fmt.Fprint(w, rulesJSON)
+				_, _ = fmt.Fprint(w, rulesJSON)
 			default:
 				http.NotFound(w, r)
 			}
@@ -154,7 +154,7 @@ var _ = Describe("PrometheusAlertHealthCheck observations", func() {
 				http.Error(w, "nope", http.StatusInternalServerError)
 				return
 			}
-			fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[]}}`)
+			_, _ = fmt.Fprint(w, `{"status":"success","data":{"resultType":"matrix","result":[]}}`)
 		})
 		hc := reconcileWith(nil)
 		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusHealthy))

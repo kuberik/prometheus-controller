@@ -76,20 +76,20 @@ func (q *DefaultAlertQuerier) QueryRules(ctx context.Context, prometheusURL stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to query Prometheus rules: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Prometheus rules API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("prometheus rules API returned status %d: %s", resp.StatusCode, string(body))
 	}
 	var parsed promRulesResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal rules response: %w", err)
 	}
 	if parsed.Status != "success" {
-		return nil, fmt.Errorf("Prometheus rules query failed: %s (%s)", parsed.Error, parsed.ErrorType)
+		return nil, fmt.Errorf("prometheus rules query failed: %s (%s)", parsed.Error, parsed.ErrorType)
 	}
 	var rules []promRule
 	for _, g := range parsed.Data.Groups {
@@ -185,10 +185,10 @@ func (s alertSnapshot) inferLimit() (float64, kuberikcomv1alpha1.HealthCheckObse
 // active returns the values of pending and firing alerts and whether any is firing.
 func (s alertSnapshot) active() (values []float64, firing bool) {
 	for _, a := range s.Alerts {
-		if a.State != "firing" && a.State != "pending" {
+		if a.State != alertStateFiring && a.State != "pending" {
 			continue
 		}
-		if a.State == "firing" {
+		if a.State == alertStateFiring {
 			firing = true
 		}
 		if v, err := strconv.ParseFloat(strings.TrimSpace(a.Value), 64); err == nil {
@@ -201,7 +201,7 @@ func (s alertSnapshot) active() (values []float64, firing bool) {
 func (s alertSnapshot) firingCount() int {
 	n := 0
 	for _, a := range s.Alerts {
-		if a.State == "firing" {
+		if a.State == alertStateFiring {
 			n++
 		}
 	}
@@ -216,7 +216,7 @@ func firingSeriesInResult(result *prometheusQueryResponse) int {
 	}
 	n := 0
 	for _, series := range result.Data.Result {
-		if series.Metric["alertstate"] != "firing" {
+		if series.Metric["alertstate"] != alertStateFiring {
 			continue
 		}
 		if len(series.Value) >= 2 {
@@ -288,3 +288,6 @@ func alertObservations(annotations, alertLabels map[string]string, snap *alertSn
 	}
 	return []observation{countObservation(firing, now)}, cfgErr
 }
+
+// alertStateFiring is the Prometheus alert state of an alert past its `for` duration.
+const alertStateFiring = "firing"

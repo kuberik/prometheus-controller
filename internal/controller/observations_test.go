@@ -4,27 +4,11 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 )
 
 var testNow = metav1.Now()
-
-func TestFormatDecimal(t *testing.T) {
-	cases := map[float64]string{0.05: "0.05", 1e-7: "0.0000001", 1e21: "1000000000000000000000", -0.0 * 1: "0", 12: "12", -3.5: "-3.5"}
-	for in, want := range cases {
-		got, ok := formatDecimal(in)
-		if !ok || got != want || !decimalPattern.MatchString(got) {
-			t.Errorf("formatDecimal(%v) = %q,%v want %q", in, got, ok, want)
-		}
-	}
-	nan := 0.0
-	nan = nan / nan
-	if _, ok := formatDecimal(nan); ok {
-		t.Error("NaN must not format")
-	}
-}
 
 func TestParseObservationConfig(t *testing.T) {
 	cfg, err := parseObservationConfig(map[string]string{
@@ -98,12 +82,13 @@ func rule(name, expr string, labels map[string]string, alerts ...promAlert) prom
 	return promRule{Name: name, Query: expr, Labels: labels, Type: "alerting", Alerts: alerts}
 }
 
+//nolint:gocyclo // one table-style scenario per alert shape; splitting would hide the shared fixtures
 func TestAlertObservations(t *testing.T) {
 	healthy, unhealthy := kuberikcomv1alpha1.HealthStatusHealthy, kuberikcomv1alpha1.HealthStatusUnhealthy
 	labels := map[string]string{"alertname": "HighErrorRate", "severity": "critical"}
 	declared := map[string]string{AnnotationObservationLimit: "0.05", AnnotationObservationDirection: "Above", AnnotationObservationUnit: "Ratio"}
 	firingAlert := func(v string) promAlert {
-		return promAlert{State: "firing", Value: v, Labels: map[string]string{"alertname": "HighErrorRate", "severity": "critical"}}
+		return promAlert{State: alertStateFiring, Value: v, Labels: map[string]string{"alertname": "HighErrorRate", "severity": "critical"}}
 	}
 	r := rule("HighErrorRate", "rate(e[5m]) > 0.05", map[string]string{"severity": "critical"}, firingAlert("1.2e-01"), firingAlert("7e-02"))
 	snap := matchAlerts([]promRule{r}, labels)
@@ -141,7 +126,7 @@ func TestAlertObservations(t *testing.T) {
 	t.Run("below direction takes the minimum", func(t *testing.T) {
 		a := map[string]string{AnnotationObservationLimit: "100", AnnotationObservationDirection: "Below"}
 		s := matchAlerts([]promRule{rule("HighErrorRate", "x", nil,
-			promAlert{State: "firing", Value: "80"}, promAlert{State: "firing", Value: "20"})}, map[string]string{"alertname": "HighErrorRate"})
+			promAlert{State: alertStateFiring, Value: "80"}, promAlert{State: alertStateFiring, Value: "20"})}, map[string]string{"alertname": "HighErrorRate"})
 		obs, _ := alertObservations(a, labels, &s, nil, unhealthy, testNow)
 		if obs[0].Value != "20" || obs[0].Limit != "100" {
 			t.Fatalf("%+v", obs[0])
@@ -202,7 +187,7 @@ func TestAlertObservations(t *testing.T) {
 			Metric map[string]string `json:"metric"`
 			Value  []interface{}     `json:"value"`
 			Values [][]interface{}   `json:"values"`
-		}{Metric: map[string]string{"alertstate": "firing"}, Values: [][]interface{}{{1.0, "1"}}})
+		}{Metric: map[string]string{"alertstate": alertStateFiring}, Values: [][]interface{}{{1.0, "1"}}})
 		obs, _ := alertObservations(nil, labels, nil, res, unhealthy, testNow)
 		if obs[0].Value != "1" || *obs[0].Healthy {
 			t.Fatalf("%+v", obs[0])
@@ -212,7 +197,7 @@ func TestAlertObservations(t *testing.T) {
 
 func TestMatchAlerts(t *testing.T) {
 	rules := []promRule{
-		rule("A", "x > 1", map[string]string{"severity": "critical"}, promAlert{State: "firing", Value: "2", Labels: map[string]string{"alertname": "A", "instance": "i1"}}),
+		rule("A", "x > 1", map[string]string{"severity": "critical"}, promAlert{State: alertStateFiring, Value: "2", Labels: map[string]string{"alertname": "A", "instance": "i1"}}),
 		rule("A", "x > 1", map[string]string{"severity": "warning"}),
 		rule("B", "x > 1", nil),
 	}
@@ -229,39 +214,5 @@ func TestMatchAlerts(t *testing.T) {
 	}
 	if s := matchAlerts(rules, map[string]string{"severity": "critical"}); len(s.Rules) != 1 {
 		t.Errorf("no alertname: %+v", s)
-	}
-}
-
-func TestMergeObservationsKeepsObservedTime(t *testing.T) {
-	old := metav1.NewTime(testNow.Add(-1e9 * 60))
-	newer := testNow
-	existing := []observation{{Name: "a", Kind: kuberikcomv1alpha1.ObservationKindCount, Value: "0", Healthy: boolPtr(true), ObservedTime: &old}}
-	merged, changed := mergeObservations(existing, []observation{{Name: "a", Kind: kuberikcomv1alpha1.ObservationKindCount, Value: "0", Healthy: boolPtr(true), ObservedTime: &newer}})
-	if changed || !merged[0].ObservedTime.Equal(&old) {
-		t.Errorf("unchanged observation must keep its time: %+v %v", merged[0], changed)
-	}
-	merged, changed = mergeObservations(existing, []observation{{Name: "a", Kind: kuberikcomv1alpha1.ObservationKindCount, Value: "1", Healthy: boolPtr(false), ObservedTime: &newer}})
-	if !changed || !merged[0].ObservedTime.Equal(&newer) {
-		t.Errorf("changed observation must take the new time: %+v %v", merged[0], changed)
-	}
-}
-
-func TestIgnoreObservationOnlyUpdates(t *testing.T) {
-	p := ignoreObservationOnlyUpdates()
-	a := &kuberikcomv1alpha1.HealthCheck{}
-	b := a.DeepCopy()
-	b.Status.Observations = []observation{{Name: "x", Kind: kuberikcomv1alpha1.ObservationKindCount, Value: "1"}}
-	if p.Update(event.UpdateEvent{ObjectOld: a, ObjectNew: b}) {
-		t.Error("observation-only change must be dropped")
-	}
-	c := b.DeepCopy()
-	c.Status.Message = new(string)
-	if !p.Update(event.UpdateEvent{ObjectOld: b, ObjectNew: c}) {
-		t.Error("message change must pass")
-	}
-	d := b.DeepCopy()
-	d.Annotations = map[string]string{"k": "v"}
-	if !p.Update(event.UpdateEvent{ObjectOld: b, ObjectNew: d}) {
-		t.Error("annotation change must pass")
 	}
 }

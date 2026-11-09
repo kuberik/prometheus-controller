@@ -27,6 +27,7 @@ import (
 	"time"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	obs "github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -129,7 +130,7 @@ func (q *DefaultAlertQuerier) QueryAlerts(ctx context.Context, prometheusURL, qu
 	if err != nil {
 		return nil, fmt.Errorf("failed to query Prometheus: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -137,7 +138,7 @@ func (q *DefaultAlertQuerier) QueryAlerts(ctx context.Context, prometheusURL, qu
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Prometheus API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("prometheus API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result prometheusQueryResponse
@@ -146,7 +147,7 @@ func (q *DefaultAlertQuerier) QueryAlerts(ctx context.Context, prometheusURL, qu
 	}
 
 	if result.Status != "success" {
-		return nil, fmt.Errorf("Prometheus query failed: %s (%s)", result.Error, result.ErrorType)
+		return nil, fmt.Errorf("prometheus query failed: %s (%s)", result.Error, result.ErrorType)
 	}
 
 	return &result, nil
@@ -309,7 +310,7 @@ func (r *PrometheusAlertHealthCheckReconciler) getAlertLabels(healthCheck *kuber
 
 // buildAlertsQuery constructs a PromQL ALERTS query from the given labels
 func buildAlertsQuery(labels map[string]string) string {
-	var parts []string
+	parts := make([]string, 0, len(labels))
 	for k, v := range labels {
 		parts = append(parts, fmt.Sprintf(`%s="%s"`, k, v))
 	}
@@ -374,7 +375,7 @@ func (r *PrometheusAlertHealthCheckReconciler) evaluateAlertResult(result *prome
 		// For range queries, check all values
 		for _, values := range series.Values {
 			if len(values) >= 2 {
-				if valueStr, ok := values[1].(string); ok && valueStr == "1" && alertState == "firing" {
+				if valueStr, ok := values[1].(string); ok && valueStr == "1" && alertState == alertStateFiring {
 					return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for labels %v", labels)
 				}
 			}
@@ -382,7 +383,7 @@ func (r *PrometheusAlertHealthCheckReconciler) evaluateAlertResult(result *prome
 
 		// For instant queries, check the single value
 		if len(series.Value) >= 2 {
-			if valueStr, ok := series.Value[1].(string); ok && valueStr == "1" && alertState == "firing" {
+			if valueStr, ok := series.Value[1].(string); ok && valueStr == "1" && alertState == alertStateFiring {
 				return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for labels %v", labels)
 			}
 		}
@@ -454,7 +455,7 @@ func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx conte
 
 	// observations is nil on error paths: keep the previous ones then.
 	if observations != nil {
-		merged, _ := mergeObservations(latest.Status.Observations, sortObservations(observations))
+		merged, _ := obs.Merge(latest.Status.Observations, obs.Sort(observations))
 		latest.Status.Observations = merged
 	}
 
@@ -551,7 +552,7 @@ func (r *PrometheusAlertHealthCheckReconciler) healthCheckReferencesSecret(healt
 // SetupWithManager sets up the controller with the Manager.
 func (r *PrometheusAlertHealthCheckReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&kuberikcomv1alpha1.HealthCheck{}, builder.WithPredicates(ignoreObservationOnlyUpdates())).
+		For(&kuberikcomv1alpha1.HealthCheck{}, builder.WithPredicates(obs.IgnoreObservationOnlyUpdates())).
 		Watches(
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.findHealthChecksForSecret),
