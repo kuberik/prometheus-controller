@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	obs "github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
 )
 
 // promRulesResponse is the response of GET /api/v1/rules?type=alert.
@@ -247,7 +248,7 @@ func firingSeriesInResult(result *prometheusQueryResponse) int {
 //   - Anything else gives a Count of firing alerts.
 //
 // snap is nil when the rules API was unavailable.
-func alertObservations(annotations, alertLabels map[string]string, snap *alertSnapshot, result *prometheusQueryResponse, status kuberikcomv1alpha1.HealthStatus, now metav1.Time) (obs []observation, cfgErr error) {
+func alertObservations(annotations, alertLabels map[string]string, snap *alertSnapshot, result *prometheusQueryResponse, status kuberikcomv1alpha1.HealthStatus, now metav1.Time) (_ []observation, cfgErr error) {
 	cfg, cfgErr := parseObservationConfig(annotations)
 	declared := cfg.HasLimit
 	if !declared && snap != nil {
@@ -272,13 +273,14 @@ func alertObservations(annotations, alertLabels map[string]string, snap *alertSn
 		if snap != nil {
 			values, firing := snap.active()
 			if v, ok := worstValue(values, cfg.Direction); ok {
-				if o, ok := thresholdObservation(cfg, v, firing, now); ok {
+				healthy := !firing
+				if o, ok := obs.Threshold(cfg.Name, v, cfg.Limit, cfg.Direction, cfg.Unit, "", &healthy, now); ok {
 					return []observation{o}, cfgErr
 				}
 			}
 		}
 		if declared {
-			return []observation{stateObservation(name, status != kuberikcomv1alpha1.HealthStatusUnhealthy, now)}, cfgErr
+			return []observation{obs.State(name, status != kuberikcomv1alpha1.HealthStatusUnhealthy, now)}, cfgErr
 		}
 	}
 
@@ -286,7 +288,7 @@ func alertObservations(annotations, alertLabels map[string]string, snap *alertSn
 	if snap != nil {
 		firing = snap.firingCount()
 	}
-	return []observation{countObservation(firing, now)}, cfgErr
+	return []observation{obs.Count(firingAlertsObservationName, firing, now)}, cfgErr
 }
 
 // alertStateFiring is the Prometheus alert state of an alert past its `for` duration.

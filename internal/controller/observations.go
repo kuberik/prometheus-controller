@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	obs "github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
 )
@@ -108,48 +106,4 @@ func worstValue(values []float64, dir kuberikcomv1alpha1.HealthCheckObservationD
 		}
 	}
 	return best, found
-}
-
-func boolPtr(b bool) *bool { return &b }
-
-// countObservation is the Count of firing alerts; healthy while there are none.
-// Pending alerts are not counted and do not make it unhealthy.
-func countObservation(firing int, now metav1.Time) observation {
-	return observation{
-		Name:         firingAlertsObservationName,
-		Kind:         kuberikcomv1alpha1.ObservationKindCount,
-		Value:        strconv.Itoa(firing),
-		Healthy:      boolPtr(firing == 0),
-		ObservedTime: &now,
-	}
-}
-
-// thresholdObservation is a Threshold; healthy is false only while an alert is
-// firing. ok is false if the value or limit cannot be rendered as a decimal.
-func thresholdObservation(cfg observationConfig, value float64, firing bool, now metav1.Time) (observation, bool) {
-	valueStr, ok1 := obs.FormatDecimal(value)
-	limitStr, ok2 := obs.FormatDecimal(cfg.Limit)
-	if !ok1 || !ok2 {
-		return observation{}, false
-	}
-	return observation{
-		Name:         cfg.Name,
-		Kind:         kuberikcomv1alpha1.ObservationKindThreshold,
-		Value:        valueStr,
-		Limit:        limitStr,
-		Direction:    cfg.Direction,
-		Unit:         cfg.Unit,
-		Healthy:      boolPtr(!firing),
-		ObservedTime: &now,
-	}, true
-}
-
-// stateObservation carries only the verdict, for a declared limit with no value known.
-func stateObservation(name string, healthy bool, now metav1.Time) observation {
-	return observation{
-		Name:         name,
-		Kind:         kuberikcomv1alpha1.ObservationKindState,
-		Healthy:      boolPtr(healthy),
-		ObservedTime: &now,
-	}
 }

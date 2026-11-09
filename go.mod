@@ -3,7 +3,7 @@ module github.com/kuberik/prometheus-controller
 go 1.25.0
 
 require (
-	github.com/kuberik/rollout-controller v0.9.3-0.20261109175317-3023a85b155b // pins unreleased #56 (status.observations); move to the release tag
+	github.com/kuberik/rollout-controller v0.11.0
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
 	k8s.io/api v0.35.0

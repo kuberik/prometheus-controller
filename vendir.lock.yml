@@ -1,7 +1,11 @@
 apiVersion: vendir.k14s.io/v1alpha1
 directories:
 - contents:
-  - directory: {}
+  - git:
+      commitTitle: 'docs: changelog for v0.11.0'
+      sha: 6eb510a8fa040bfddf7bc44b3b0b1d1bd0b2ed4d
+      tags:
+      - v0.11.0
     path: kuberik
   path: vendir/crds
 kind: LockConfig
