@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -311,10 +312,29 @@ func (r *PrometheusAlertHealthCheckReconciler) getAlertLabels(healthCheck *kuber
 // buildAlertsQuery constructs a PromQL ALERTS query from the given labels
 func buildAlertsQuery(labels map[string]string) string {
 	parts := make([]string, 0, len(labels))
-	for k, v := range labels {
-		parts = append(parts, fmt.Sprintf(`%s="%s"`, k, v))
+	for _, k := range sortedLabelKeys(labels) {
+		parts = append(parts, fmt.Sprintf(`%s="%s"`, k, labels[k]))
 	}
 	return fmt.Sprintf("ALERTS{%s}", strings.Join(parts, ","))
+}
+
+func sortedLabelKeys(labels map[string]string) []string {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// formatAlertLabels renders labels as a sorted, human-readable list such as
+// "alertname=HighErrorRate, app=checkout-api" for use in status messages.
+func formatAlertLabels(labels map[string]string) string {
+	parts := make([]string, 0, len(labels))
+	for _, k := range sortedLabelKeys(labels) {
+		parts = append(parts, k+"="+labels[k])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // getCredentials retrieves optional Prometheus credentials from a Kubernetes Secret
@@ -365,7 +385,7 @@ func (r *PrometheusAlertHealthCheckReconciler) getCredentials(ctx context.Contex
 // evaluateAlertResult checks if any alert is firing in the query result
 func (r *PrometheusAlertHealthCheckReconciler) evaluateAlertResult(result *prometheusQueryResponse, labels map[string]string) (kuberikcomv1alpha1.HealthStatus, string) {
 	if len(result.Data.Result) == 0 {
-		return kuberikcomv1alpha1.HealthStatusHealthy, fmt.Sprintf("No alerts firing for labels %v", labels)
+		return kuberikcomv1alpha1.HealthStatusHealthy, fmt.Sprintf("No alerts firing for %s", formatAlertLabels(labels))
 	}
 
 	// Check all time series - if any has a firing value (1), the alert is firing
@@ -376,7 +396,7 @@ func (r *PrometheusAlertHealthCheckReconciler) evaluateAlertResult(result *prome
 		for _, values := range series.Values {
 			if len(values) >= 2 {
 				if valueStr, ok := values[1].(string); ok && valueStr == "1" && alertState == alertStateFiring {
-					return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for labels %v", labels)
+					return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for %s", formatAlertLabels(labels))
 				}
 			}
 		}
@@ -384,17 +404,17 @@ func (r *PrometheusAlertHealthCheckReconciler) evaluateAlertResult(result *prome
 		// For instant queries, check the single value
 		if len(series.Value) >= 2 {
 			if valueStr, ok := series.Value[1].(string); ok && valueStr == "1" && alertState == alertStateFiring {
-				return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for labels %v", labels)
+				return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for %s", formatAlertLabels(labels))
 			}
 		}
 
 		// If we have pending alerts but not firing, mark as pending
 		if alertState == "pending" {
-			return kuberikcomv1alpha1.HealthStatusPending, fmt.Sprintf("Alert pending for labels %v", labels)
+			return kuberikcomv1alpha1.HealthStatusPending, fmt.Sprintf("Alert pending for %s", formatAlertLabels(labels))
 		}
 	}
 
-	return kuberikcomv1alpha1.HealthStatusHealthy, fmt.Sprintf("No alerts firing for labels %v", labels)
+	return kuberikcomv1alpha1.HealthStatusHealthy, fmt.Sprintf("No alerts firing for %s", formatAlertLabels(labels))
 }
 
 // getLastScrapeTime retrieves the last scrape timestamp from the HealthCheck annotation
