@@ -388,14 +388,23 @@ func (r *PrometheusAlertHealthCheckReconciler) evaluateAlertResult(result *prome
 		return kuberikcomv1alpha1.HealthStatusHealthy, fmt.Sprintf("No alerts firing for %s", formatAlertLabels(labels))
 	}
 
-	// Check all time series - if any has a firing value (1), the alert is firing
+	// The worst state across every series wins, regardless of the order
+	// Prometheus lists them in: firing beats pending beats healthy.
+	pending := false
 	for _, series := range result.Data.Result {
 		alertState := series.Metric["alertstate"]
+		if alertState == "pending" {
+			pending = true
+			continue
+		}
+		if alertState != alertStateFiring {
+			continue
+		}
 
 		// For range queries, check all values
 		for _, values := range series.Values {
 			if len(values) >= 2 {
-				if valueStr, ok := values[1].(string); ok && valueStr == "1" && alertState == alertStateFiring {
+				if valueStr, ok := values[1].(string); ok && valueStr == "1" {
 					return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for %s", formatAlertLabels(labels))
 				}
 			}
@@ -403,15 +412,14 @@ func (r *PrometheusAlertHealthCheckReconciler) evaluateAlertResult(result *prome
 
 		// For instant queries, check the single value
 		if len(series.Value) >= 2 {
-			if valueStr, ok := series.Value[1].(string); ok && valueStr == "1" && alertState == alertStateFiring {
+			if valueStr, ok := series.Value[1].(string); ok && valueStr == "1" {
 				return kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Alert firing for %s", formatAlertLabels(labels))
 			}
 		}
+	}
 
-		// If we have pending alerts but not firing, mark as pending
-		if alertState == "pending" {
-			return kuberikcomv1alpha1.HealthStatusPending, fmt.Sprintf("Alert pending for %s", formatAlertLabels(labels))
-		}
+	if pending {
+		return kuberikcomv1alpha1.HealthStatusPending, fmt.Sprintf("Alert pending for %s", formatAlertLabels(labels))
 	}
 
 	return kuberikcomv1alpha1.HealthStatusHealthy, fmt.Sprintf("No alerts firing for %s", formatAlertLabels(labels))
