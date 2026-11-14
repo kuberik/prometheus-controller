@@ -35,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -588,7 +589,10 @@ func (r *PrometheusAlertHealthCheckReconciler) SetupWithManager(mgr ctrl.Manager
 // this controller writes on every poll: status and the last-scrape-time
 // annotation. Without it each poll's own writes enqueue the next reconcile
 // immediately and requeue-interval is never honoured. Any other change
-// (spec, labels, other annotations) still reconciles at once.
+// (spec, labels, other annotations) still reconciles at once, and so does a
+// change of status or message on an already-evaluated check: that is how
+// rollout-controller's reset on a new deployment reaches us. (Our own
+// transitions pass too, costing one extra poll on a state change.)
 func ignoreOwnBookkeepingUpdates() predicate.Predicate {
 	strip := func(in map[string]string) map[string]string {
 		out := make(map[string]string, len(in))
@@ -602,6 +606,12 @@ func ignoreOwnBookkeepingUpdates() predicate.Predicate {
 	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
 		if e.ObjectOld == nil || e.ObjectNew == nil {
 			return true
+		}
+		if oldHC, ok := e.ObjectOld.(*kuberikcomv1alpha1.HealthCheck); ok {
+			if newHC, ok := e.ObjectNew.(*kuberikcomv1alpha1.HealthCheck); ok && oldHC.Status.Status != "" &&
+				(oldHC.Status.Status != newHC.Status.Status || ptr.Deref(oldHC.Status.Message, "") != ptr.Deref(newHC.Status.Message, "")) {
+				return true
+			}
 		}
 		return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
 			!equality.Semantic.DeepEqual(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels()) ||
