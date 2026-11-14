@@ -30,15 +30,19 @@ import (
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
 	obs "github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -458,11 +462,11 @@ func (r *PrometheusAlertHealthCheckReconciler) setLastScrapeTime(ctx context.Con
 func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *kuberikcomv1alpha1.HealthCheck, newStatus kuberikcomv1alpha1.HealthStatus, newMessage string, observations ...observation) (ctrl.Result, error) {
 	now := metav1.Now()
 
-	// Re-fetch to avoid conflicts after annotation update
-	latest := &kuberikcomv1alpha1.HealthCheck{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: healthCheck.Namespace, Name: healthCheck.Name}, latest); err != nil {
-		return ctrl.Result{}, err
-	}
+	// Work on the object we already hold: r.Update refreshed it with the new
+	// resourceVersion after the annotation write, whereas re-reading through
+	// the cache returns the stale version and the status write conflicts,
+	// which retries the reconcile (and the Prometheus query) immediately.
+	latest := healthCheck.DeepCopy()
 
 	// Check if status has changed
 	statusChanged := latest.Status.Status != newStatus
@@ -580,11 +584,46 @@ func (r *PrometheusAlertHealthCheckReconciler) healthCheckReferencesSecret(healt
 // SetupWithManager sets up the controller with the Manager.
 func (r *PrometheusAlertHealthCheckReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&kuberikcomv1alpha1.HealthCheck{}, builder.WithPredicates(obs.IgnoreObservationOnlyUpdates())).
+		For(&kuberikcomv1alpha1.HealthCheck{}, builder.WithPredicates(obs.IgnoreObservationOnlyUpdates(), ignoreOwnBookkeepingUpdates())).
 		Watches(
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.findHealthChecksForSecret),
 		).
 		Named("prometheusalerthealthcheck").
 		Complete(r)
+}
+
+// ignoreOwnBookkeepingUpdates drops HealthCheck updates that only touch what
+// this controller writes on every poll: status and the last-scrape-time
+// annotation. Without it each poll's own writes enqueue the next reconcile
+// immediately and requeue-interval is never honoured. Any other change
+// (spec, labels, other annotations) still reconciles at once, and so does a
+// change of status or message on an already-evaluated check: that is how
+// rollout-controller's reset on a new deployment reaches us. (Our own
+// transitions pass too, costing one extra poll on a state change.)
+func ignoreOwnBookkeepingUpdates() predicate.Predicate {
+	strip := func(in map[string]string) map[string]string {
+		out := make(map[string]string, len(in))
+		for k, v := range in {
+			if k != AnnotationLastScrapeTime {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	return predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+		if e.ObjectOld == nil || e.ObjectNew == nil {
+			return true
+		}
+		if oldHC, ok := e.ObjectOld.(*kuberikcomv1alpha1.HealthCheck); ok {
+			if newHC, ok := e.ObjectNew.(*kuberikcomv1alpha1.HealthCheck); ok && oldHC.Status.Status != "" &&
+				(oldHC.Status.Status != newHC.Status.Status || ptr.Deref(oldHC.Status.Message, "") != ptr.Deref(newHC.Status.Message, "")) {
+				return true
+			}
+		}
+		return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() ||
+			!equality.Semantic.DeepEqual(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels()) ||
+			!equality.Semantic.DeepEqual(strip(e.ObjectOld.GetAnnotations()), strip(e.ObjectNew.GetAnnotations())) ||
+			!equality.Semantic.DeepEqual(e.ObjectOld.GetDeletionTimestamp(), e.ObjectNew.GetDeletionTimestamp())
+	}}
 }
