@@ -44,7 +44,6 @@ func (c *countingQuerier) QueryAlerts(_ context.Context, url, _ string, _, _ tim
 
 var _ = Describe("poll rate under a running manager", func() {
 	for _, state := range []string{"firing", "none"} {
-		state := state
 		It("polls Prometheus no more often than requeue-interval ("+state+")", func() {
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "poll-ns-"}}
 			Expect(k8sClient.Create(context.Background(), ns)).To(Succeed())
