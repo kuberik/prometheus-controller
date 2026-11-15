@@ -70,6 +70,7 @@ spec:
               availableReleasesMinCount:
                 default: 30
                 description: |-
+                  Deprecated: ignored; retention is ReleaseSource.spec.retention. Removed in the next release.
                   AvailableReleasesMinCount defines the minimum number of available releases to always keep
                   When history is full, at least this many releases will be retained regardless of other criteria.
                   Defaults to 30 if not specified.
@@ -79,6 +80,7 @@ spec:
               availableReleasesRetentionDays:
                 default: 7
                 description: |-
+                  Deprecated: ignored; retention is ReleaseSource.spec.retention. Removed in the next release.
                   AvailableReleasesRetentionDays defines how many days of available releases to keep based on creation timestamp
                   When history is full, releases older than this retention period may be removed.
                   Defaults to 7 days if not specified.
@@ -200,9 +202,33 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 type: object
+              releaseSourceRef:
+                description: |-
+                  ReleaseSourceRef names a ReleaseSource (kuberik.com, served by release-controller)
+                  in the same namespace that provides this Rollout's releases. When set (and the
+                  release-controller CRDs are installed) the Rollout reads its releases from the
+                  source's ReleaseSlice catalogue. This is the only release path: a Rollout
+                  without it gets no releases and reports ReleasesUpdated=False and Ready=False
+                  with reason ReleaseSourceRequired.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               releasesImagePolicy:
-                description: ReleasesImagePolicy specifies the ImagePolicy that provides
-                  available releases
+                description: |-
+                  Deprecated: ignored; removed in the next release. Releases come from
+                  releaseSourceRef; to migrate an existing Flux ImagePolicy, create a
+                  ReleaseSource with spec.oci.imagePolicyRef. A Rollout that sets it reports
+                  ReleasesImagePolicyIgnored=True.
+                  A value type, so Go clients always send "releasesImagePolicy: {}".
                 properties:
                   name:
                     default: ""
@@ -226,8 +252,6 @@ spec:
                 description: WantedVersion specifies a specific version to deploy,
                   overriding the automatic version selection
                 type: string
-            required:
-            - releasesImagePolicy
             type: object
           status:
             description: RolloutStatus defines the observed state of Rollout.
@@ -239,8 +263,10 @@ spec:
                   This field is set once for the entire rollout based on the latest available release.
                 type: string
               availableReleases:
-                description: AvailableReleases is a list of all releases available
-                  in the releases repository.
+                description: |-
+                  Deprecated: ignored; no longer written (cleared on reconcile). Read
+                  status.candidates and the ReleaseSlice catalogue instead. Removed in the next release.
+                  AvailableReleases is a list of all releases available in the releases repository.
                 items:
                   description: VersionInfo represents detailed information about a
                     version.
@@ -293,6 +319,47 @@ spec:
                   required:
                   - tag
                   type: object
+                type: array
+              candidates:
+                description: |-
+                  Candidates is the working set in slices mode: the K newest releases newer
+                  than the deployed one, plus any release newer than the deployed one that a
+                  gate's allowedVersions, the force-deploy or bypass-gates annotation, or
+                  spec.wantedVersion names. Newest first.
+                items:
+                  description: |-
+                    ReleaseCandidate is a release the Rollout could deploy next. It is
+                    deliberately lean: full release metadata (digest, revision, version,
+                    requires) lives in the ReleaseSlice catalogue and in history entries.
+                  properties:
+                    blockedBy:
+                      description: BlockedBy lists the gates that do not let this
+                        release through.
+                      items:
+                        type: string
+                      maxItems: 16
+                      type: array
+                    created:
+                      description: Created is the release creation time.
+                      format: date-time
+                      type: string
+                    firstSeen:
+                      description: FirstSeen is when the catalogue first admitted
+                        this release.
+                      format: date-time
+                      type: string
+                    gated:
+                      description: Gated is true when the release passes every gate.
+                      type: boolean
+                    tag:
+                      description: Tag is the release tag.
+                      maxLength: 128
+                      type: string
+                  required:
+                  - gated
+                  - tag
+                  type: object
+                maxItems: 64
                 type: array
               conditions:
                 description: Conditions represents the current state of the rollout
@@ -362,6 +429,8 @@ spec:
                 type: string
               gatedReleaseCandidates:
                 description: |-
+                  Deprecated: ignored; no longer written (cleared on reconcile). Read status.candidates
+                  (gated field) instead. Removed in the next release.
                   GatedReleaseCandidates is a list of release candidates that have passed through all gates.
                   This shows which versions are actually available for deployment after gate evaluation.
                 items:
@@ -431,8 +500,10 @@ spec:
                         type: string
                       type: array
                     bypassGates:
-                      description: BypassGates indicates whether this gate was bypassed
-                        for the current deployment.
+                      description: |-
+                        BypassGates indicates whether this gate was bypassed for the current deployment.
+                        With the rollout.kuberik.com/bypass-gates-only annotation, only the listed
+                        gates are marked.
                       type: boolean
                     message:
                       description: Message is a message describing the status of the
@@ -457,10 +528,38 @@ spec:
                   description: DeploymentHistoryEntry represents a single entry in
                     the deployment history.
                   properties:
+                    approval:
+                      description: |-
+                        Approval names the RolloutApproval that let this build through an
+                        approval gate. Nil when no approval gate applied, or when gates were bypassed.
+                      properties:
+                        by:
+                          description: By is the approval.kuberik.com/by annotation
+                            at deploy time, if set.
+                          type: string
+                        name:
+                          description: Name of the RolloutApproval, in the Rollout's
+                            namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
                     bakeEndTime:
                       description: |-
                         BakeEndTime is the time when the bake period ended for this deployment
                         This is when the bake process completed (either successfully or with failure).
+                      format: date-time
+                      type: string
+                    bakeHeldDuration:
+                      description: |-
+                        BakeHeldDuration is the total time the bake clock was stopped, excluding
+                        the hold in progress (see BakeHoldStartTime). Held time does not count
+                        toward the bake time.
+                      type: string
+                    bakeHoldStartTime:
+                      description: |-
+                        BakeHoldStartTime is when the bake clock was stopped because a selected
+                        health check was not Healthy. It is nil while the bake clock is running.
                       format: date-time
                       type: string
                     bakeStartTime:
@@ -537,6 +636,14 @@ spec:
                                     observation, as a decimal string.
                                   pattern: ^-?[0-9]+(\.[0-9]+)?$
                                   type: string
+                                message:
+                                  description: |-
+                                    Message says what this observation is about when Name alone does not: the
+                                    failing resource's status message, the alert's identifying labels, the
+                                    monitor's alerting groups. One line of plain text. Consumers show it
+                                    verbatim and never parse it.
+                                  maxLength: 256
+                                  type: string
                                 name:
                                   description: Name of the observed quantity, shown
                                     as the label ("error rate", "p99 latency").
@@ -595,7 +702,7 @@ spec:
                         This field contains human-readable information about the deployment context.
                         For automatic deployments, it includes information about gate bypass and failed bake unblock.
                         For manual deployments (when wantedVersion is specified), it can contain a custom message
-                        provided via the "rollout.kuberik.com/deployment-message" annotation, or defaults to "Manual deployment".
+                        provided via the "rollout.kuberik.com/deploy-message" annotation, or defaults to "Manual deployment".
                       type: string
                     timestamp:
                       description: Timestamp is the time when the deployment occurred.
@@ -685,6 +792,8 @@ spec:
                 type: array
               releaseCandidates:
                 description: |-
+                  Deprecated: ignored; no longer written (cleared on reconcile). Read status.candidates instead.
+                  Removed in the next release.
                   ReleaseCandidates is a list of releases that are candidates for the next deployment.
                   These are filtered from AvailableReleases based on deployment history and version ordering.
                 items:
@@ -740,6 +849,32 @@ spec:
                   - tag
                   type: object
                 type: array
+              releaseSource:
+                description: ReleaseSource summarises the ReleaseSource this Rollout
+                  reads (slices mode only).
+                properties:
+                  count:
+                    description: Count is the number of releases in the catalogue.
+                    format: int32
+                    type: integer
+                  name:
+                    description: Name of the ReleaseSource.
+                    type: string
+                  newest:
+                    description: Newest is the tag of the newest release in the catalogue.
+                    type: string
+                  observedAt:
+                    description: ObservedAt is when name, ready, count or newest last
+                      changed.
+                    format: date-time
+                    type: string
+                  ready:
+                    description: Ready mirrors the ReleaseSource Ready condition.
+                    type: boolean
+                required:
+                - name
+                - ready
+                type: object
               source:
                 description: |-
                   Source is the source information extracted from OCI annotations.

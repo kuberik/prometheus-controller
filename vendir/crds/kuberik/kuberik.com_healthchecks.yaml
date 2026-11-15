@@ -98,6 +98,14 @@ spec:
                         as a decimal string.
                       pattern: ^-?[0-9]+(\.[0-9]+)?$
                       type: string
+                    message:
+                      description: |-
+                        Message says what this observation is about when Name alone does not: the
+                        failing resource's status message, the alert's identifying labels, the
+                        monitor's alerting groups. One line of plain text. Consumers show it
+                        verbatim and never parse it.
+                      maxLength: 256
+                      type: string
                     name:
                       description: Name of the observed quantity, shown as the label
                         ("error rate", "p99 latency").

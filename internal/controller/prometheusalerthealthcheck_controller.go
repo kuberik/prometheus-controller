@@ -192,21 +192,21 @@ func (r *PrometheusAlertHealthCheckReconciler) Reconcile(ctx context.Context, re
 	prometheusURL, err := r.getPrometheusURL(healthCheck)
 	if err != nil {
 		log.Error(err, "Failed to get Prometheus URL")
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusUnhealthy, err.Error())
+		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, err.Error(), []observation{}...)
 	}
 
 	// Get alert labels from annotations
 	alertLabels, err := r.getAlertLabels(healthCheck)
 	if err != nil {
 		log.Error(err, "Failed to get alert labels")
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusUnhealthy, err.Error())
+		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, err.Error(), []observation{}...)
 	}
 
 	// Get optional credentials
 	auth, err := r.getCredentials(ctx, healthCheck)
 	if err != nil {
 		log.Error(err, "Failed to get Prometheus credentials")
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusUnhealthy, fmt.Sprintf("Failed to get credentials: %v", err))
+		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, fmt.Sprintf("Failed to get credentials: %v", err), []observation{}...)
 	}
 
 	// Build the ALERTS query from labels
@@ -231,7 +231,7 @@ func (r *PrometheusAlertHealthCheckReconciler) Reconcile(ctx context.Context, re
 	if err != nil {
 		log.Error(err, "Failed to query Prometheus", "query", query)
 		errMsg := fmt.Sprintf("Failed to query Prometheus: %v", err)
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusUnhealthy, errMsg)
+		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, errMsg, []observation{}...)
 	}
 
 	// Update last scrape time
@@ -242,6 +242,9 @@ func (r *PrometheusAlertHealthCheckReconciler) Reconcile(ctx context.Context, re
 
 	// Check if any alert is firing in the range
 	healthStatus, message := r.evaluateAlertResult(result, alertLabels)
+	if n := len(activeSeries(result)); n > obs.Max {
+		message = fmt.Sprintf("%s (%d alerts, showing %d)", message, n, obs.Max)
+	}
 
 	// Observations are best effort: a failing rules lookup or bad annotation
 	// degrades them, never the status.
@@ -485,7 +488,8 @@ func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx conte
 		latest.Status.LastErrorTime = &now
 	}
 
-	// observations is nil on error paths: keep the previous ones then.
+	// A check that could not evaluate passes an empty, non-nil list: it has
+	// nothing to observe and must not show the last evaluation's alerts.
 	if observations != nil {
 		merged, _ := obs.Merge(latest.Status.Observations, obs.Sort(observations))
 		latest.Status.Observations = merged

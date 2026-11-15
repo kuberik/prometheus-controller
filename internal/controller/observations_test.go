@@ -181,7 +181,7 @@ func TestAlertObservations(t *testing.T) {
 			t.Fatalf("%+v %v", obs[0], err)
 		}
 	})
-	t.Run("without the rules API the Count comes from the ALERTS series", func(t *testing.T) {
+	t.Run("without the rules API a firing ALERTS series is a State", func(t *testing.T) {
 		res := &prometheusQueryResponse{}
 		res.Data.Result = append(res.Data.Result, struct {
 			Metric map[string]string `json:"metric"`
@@ -189,7 +189,7 @@ func TestAlertObservations(t *testing.T) {
 			Values [][]interface{}   `json:"values"`
 		}{Metric: map[string]string{"alertstate": alertStateFiring}, Values: [][]interface{}{{1.0, "1"}}})
 		obs, _ := alertObservations(nil, labels, nil, res, unhealthy, testNow)
-		if obs[0].Value != "1" || *obs[0].Healthy {
+		if obs[0].Kind != kuberikcomv1alpha1.ObservationKindState || obs[0].Healthy == nil || *obs[0].Healthy {
 			t.Fatalf("%+v", obs[0])
 		}
 	})
