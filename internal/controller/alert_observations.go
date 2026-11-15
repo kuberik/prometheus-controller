@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,9 @@ type promAlert struct {
 	State  string            `json:"state"`
 	// Value is the evaluated value of the rule expression, e.g. "1.2e+01".
 	Value string `json:"value"`
+	// full is the alert's labels merged with its rule's name and labels. Set
+	// by matchAlerts.
+	full map[string]string
 }
 
 // RuleQuerier is implemented by AlertQuerier implementations that can also list
@@ -153,6 +157,7 @@ func matchAlerts(rules []promRule, filter map[string]string) alertSnapshot {
 				labels[k] = v
 			}
 			if labelsContain(labels, filter) {
+				a.full = labels
 				matched = append(matched, a)
 			}
 		}
@@ -186,7 +191,7 @@ func (s alertSnapshot) inferLimit() (float64, kuberikcomv1alpha1.HealthCheckObse
 // active returns the values of pending and firing alerts and whether any is firing.
 func (s alertSnapshot) active() (values []float64, firing bool) {
 	for _, a := range s.Alerts {
-		if a.State != alertStateFiring && a.State != "pending" {
+		if a.State != alertStateFiring && a.State != alertStatePending {
 			continue
 		}
 		if a.State == alertStateFiring {
@@ -269,6 +274,10 @@ func alertObservations(annotations, alertLabels map[string]string, snap *alertSn
 	}
 	cfg.Name = name
 
+	if series := activeSeries(result); len(series) > 0 {
+		return seriesObservations(series, cfg, annotations[AnnotationObservationName] != "", alertLabels, snap, now), cfgErr
+	}
+
 	if cfg.HasLimit {
 		if snap != nil {
 			values, firing := snap.active()
@@ -293,3 +302,140 @@ func alertObservations(annotations, alertLabels map[string]string, snap *alertSn
 
 // alertStateFiring is the Prometheus alert state of an alert past its `for` duration.
 const alertStateFiring = "firing"
+
+// alertStatePending is the Prometheus alert state of an alert within its `for` duration.
+const alertStatePending = "pending"
+
+// alertSeries is one firing or pending alert seen in an ALERTS query result.
+type alertSeries struct {
+	labels map[string]string
+	firing bool
+}
+
+// activeSeries lists the alerts that are firing (value 1 at some point in the
+// range) or pending in an ALERTS query result, one per distinct label set
+// without alertstate: a series that went from pending to firing within the
+// range appears once, as firing.
+func activeSeries(result *prometheusQueryResponse) []alertSeries {
+	if result == nil {
+		return nil
+	}
+	byKey := map[string]*alertSeries{}
+	order := make([]string, 0, len(result.Data.Result))
+	for _, s := range result.Data.Result {
+		state := s.Metric["alertstate"]
+		if state != alertStateFiring && state != alertStatePending {
+			continue
+		}
+		firing := state == alertStateFiring
+		if firing && !seriesHasValueOne(s.Value, s.Values) {
+			continue
+		}
+		labels := map[string]string{}
+		for k, v := range s.Metric {
+			if k != "alertstate" && k != "__name__" {
+				labels[k] = v
+			}
+		}
+		key := formatAlertLabels(labels)
+		if prev, ok := byKey[key]; ok {
+			prev.firing = prev.firing || firing
+			continue
+		}
+		byKey[key] = &alertSeries{labels: labels, firing: firing}
+		order = append(order, key)
+	}
+	out := make([]alertSeries, 0, len(order))
+	for _, k := range order {
+		out = append(out, *byKey[k])
+	}
+	return out
+}
+
+func seriesHasValueOne(value []interface{}, values [][]interface{}) bool {
+	if len(value) >= 2 {
+		if s, ok := value[1].(string); ok && s == "1" {
+			return true
+		}
+	}
+	for _, v := range values {
+		if len(v) >= 2 {
+			if s, ok := v[1].(string); ok && s == "1" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// seriesObservations writes one observation per active series, named by
+// alertname. The message holds the labels that tell series of the same alert
+// apart: everything but alertname and the labels the selector already fixes.
+func seriesObservations(series []alertSeries, cfg observationConfig, named bool, selector map[string]string, snap *alertSnapshot, now metav1.Time) []observation {
+	out := make([]observation, 0, len(series))
+	for _, s := range series {
+		name := s.labels["alertname"]
+		if name == "" || named {
+			name = cfg.Name
+		}
+
+		var o observation
+		built := false
+		if cfg.HasLimit && snap != nil {
+			if v, ok := seriesValue(snap, s, cfg); ok {
+				healthy := !s.firing
+				var hp *bool
+				if !s.firing {
+					hp = nil
+				} else {
+					hp = &healthy
+				}
+				if t, ok := obs.Threshold(name, v, cfg.Limit, cfg.Direction, cfg.Unit, "", hp, now); ok {
+					o, built = t, true
+				}
+			}
+		}
+		if !built {
+			o = obs.State(name, false, now)
+			if !s.firing {
+				o.Healthy = nil
+			}
+		}
+
+		rest := map[string]string{}
+		for k, v := range s.labels {
+			if _, inSelector := selector[k]; !inSelector && k != "alertname" {
+				rest[k] = v
+			}
+		}
+		o.Message = obs.Message(formatAlertLabels(rest))
+		out = append(out, o)
+	}
+	// Names repeat when one rule fires for several series; order by message so
+	// the list is stable between polls and Merge sees no change.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Message < out[j].Message
+	})
+	return out
+}
+
+// seriesValue is the worst evaluated value among the rule alerts that carry
+// the series' labels.
+func seriesValue(snap *alertSnapshot, s alertSeries, cfg observationConfig) (float64, bool) {
+	var values []float64
+	for _, a := range snap.Alerts {
+		if a.State != alertStateFiring && a.State != alertStatePending {
+			continue
+		}
+		if a.full != nil && !labelsContain(a.full, s.labels) {
+			continue
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSpace(a.Value), 64); err == nil {
+			values = append(values, v)
+		}
+	}
+	return worstValue(values, cfg.Direction)
+}

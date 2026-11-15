@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kuberikcomv1alpha1 "github.com/kuberik/rollout-controller/api/v1alpha1"
+	obs "github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
 )
 
 // MockAlertQuerier is a mock implementation of AlertQuerier for testing
@@ -119,15 +120,15 @@ var _ = Describe("PrometheusAlertHealthCheck observations", func() {
 		Expect(o.ObservedTime).NotTo(BeNil())
 	})
 
-	It("writes a Count of firing alerts when the rule is not a trivial threshold", func() {
+	It("writes a State named by alertname when the rule is not a trivial threshold", func() {
 		rulesJSON = `{"status":"success","data":{"groups":[{"rules":[{"name":"HighErrorRate","query":"a > 1 and b > 2","type":"alerting","labels":{"severity":"critical"},"alerts":[{"labels":{"alertname":"HighErrorRate","severity":"critical"},"state":"firing","value":"1e+00"}]}]}]}}`
 		hc := reconcileWith(nil)
 		Expect(hc.Status.Observations).To(HaveLen(1))
 		o := hc.Status.Observations[0]
-		Expect(o.Name).To(Equal("firing alerts"))
-		Expect(o.Kind).To(Equal(kuberikcomv1alpha1.ObservationKindCount))
-		Expect(o.Value).To(Equal("1"))
+		Expect(o.Name).To(Equal("HighErrorRate"))
+		Expect(o.Kind).To(Equal(kuberikcomv1alpha1.ObservationKindState))
 		Expect(*o.Healthy).To(BeFalse())
+		Expect(o.Message).To(BeEmpty())
 	})
 
 	It("infers the Threshold from a simple rule expression without annotations", func() {
@@ -369,7 +370,7 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("Alert pending"))
 		})
 
-		It("should update HealthCheck to Unhealthy when Prometheus query fails", func() {
+		It("should update HealthCheck to Pending when Prometheus query fails", func() {
 			ctx := context.Background()
 			By("setting up mock to return error")
 			mockQuerier.Error = fmt.Errorf("connection refused")
@@ -390,7 +391,9 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.LastErrorTime).To(BeNil())
+			Expect(updatedHealthCheck.Status.Observations).To(BeEmpty())
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("connection refused"))
 		})
@@ -470,7 +473,7 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatus("")))
 		})
 
-		It("should set Unhealthy status when Prometheus URL annotation is missing", func() {
+		It("should set Pending status when Prometheus URL annotation is missing", func() {
 			ctx := context.Background()
 			By("creating a HealthCheck without Prometheus URL annotation")
 			noURLHealthCheck := &kuberikcomv1alpha1.HealthCheck{
@@ -509,11 +512,13 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.LastErrorTime).To(BeNil())
+			Expect(updatedHealthCheck.Status.Observations).To(BeEmpty())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("prometheus-url"))
 		})
 
-		It("should set Unhealthy status when alert labels annotation is missing", func() {
+		It("should set Pending status when alert labels annotation is missing", func() {
 			ctx := context.Background()
 			By("creating a HealthCheck without alert labels annotation")
 			noLabelsHealthCheck := &kuberikcomv1alpha1.HealthCheck{
@@ -552,7 +557,9 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			}, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.LastErrorTime).To(BeNil())
+			Expect(updatedHealthCheck.Status.Observations).To(BeEmpty())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("prometheus-alert-labels"))
 		})
 
@@ -733,7 +740,7 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusHealthy))
 		})
 
-		It("should set Unhealthy when credentials secret does not exist", func() {
+		It("should set Pending when credentials secret does not exist", func() {
 			ctx := context.Background()
 			By("updating the HealthCheck with reference to non-existent secret")
 			err := k8sClient.Get(ctx, typeNamespacedName, healthCheck)
@@ -757,7 +764,9 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, updatedHealthCheck)
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
+			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusPending))
+			Expect(updatedHealthCheck.Status.LastErrorTime).To(BeNil())
+			Expect(updatedHealthCheck.Status.Observations).To(BeEmpty())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("non-existent-secret"))
 		})
 
@@ -910,3 +919,114 @@ var _ = Describe("buildAlertsQuery", func() {
 		Expect(query).To(HaveSuffix("}"))
 	})
 })
+
+var _ = Describe("PrometheusAlertHealthCheck per-alert observations", func() {
+	var (
+		ctx       = context.Background()
+		namespace string
+		querier   *fakeSeriesQuerier
+		hcKey     types.NamespacedName
+	)
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "series-ns-"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace = ns.Name
+		querier = &fakeSeriesQuerier{}
+		hcKey = types.NamespacedName{Name: "series", Namespace: namespace}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+	})
+
+	reconcileOnce := func(selector string) *kuberikcomv1alpha1.HealthCheck {
+		hc := &kuberikcomv1alpha1.HealthCheck{}
+		if err := k8sClient.Get(ctx, hcKey, hc); err != nil {
+			hc = &kuberikcomv1alpha1.HealthCheck{
+				ObjectMeta: metav1.ObjectMeta{Name: hcKey.Name, Namespace: namespace, Annotations: map[string]string{
+					AnnotationPrometheusURL: "http://prometheus.invalid", AnnotationPrometheusAlertLabels: selector,
+				}},
+				Spec: kuberikcomv1alpha1.HealthCheckSpec{Class: ptr.To(HealthCheckClassPrometheusAlert)},
+			}
+			Expect(k8sClient.Create(ctx, hc)).To(Succeed())
+		}
+		r := &PrometheusAlertHealthCheckReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), AlertQuerier: querier}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: hcKey})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, hcKey, hc)).To(Succeed())
+		return hc
+	}
+
+	It("writes one observation per firing alert, named by alertname, with the distinguishing labels as message", func() {
+		querier.series = []map[string]string{
+			{"alertname": "HighErrorRate", "alertstate": "firing", "severity": "critical", "pod": "checkout-1"},
+			{"alertname": "HighErrorRate", "alertstate": "firing", "severity": "critical", "pod": "checkout-2"},
+			{"alertname": "DiskFull", "alertstate": "firing", "severity": "critical", "instance": "node-a"},
+		}
+		hc := reconcileOnce("severity=critical")
+		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
+		Expect(hc.Status.LastErrorTime).NotTo(BeNil())
+		var got []string
+		for _, o := range hc.Status.Observations {
+			Expect(o.Healthy).NotTo(BeNil())
+			Expect(*o.Healthy).To(BeFalse())
+			got = append(got, o.Name+"|"+o.Message)
+		}
+		Expect(got).To(Equal([]string{
+			"DiskFull|instance=node-a",
+			"HighErrorRate|pod=checkout-1",
+			"HighErrorRate|pod=checkout-2",
+		}))
+	})
+
+	It("leaves healthy unset for a pending alert", func() {
+		querier.series = []map[string]string{{"alertname": "HighErrorRate", "alertstate": "pending", "severity": "critical"}}
+		hc := reconcileOnce("alertname=HighErrorRate")
+		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusPending))
+		Expect(hc.Status.Observations).To(HaveLen(1))
+		Expect(hc.Status.Observations[0].Healthy).To(BeNil())
+		Expect(hc.Status.Observations[0].Message).To(Equal("severity=critical"))
+	})
+
+	It("caps the list at the observation limit and keeps the full count in the status message", func() {
+		for i := 0; i < obs.Max+4; i++ {
+			querier.series = append(querier.series, map[string]string{"alertname": "Flaky", "alertstate": "firing", "pod": fmt.Sprintf("p-%02d", i)})
+		}
+		hc := reconcileOnce("alertname=Flaky")
+		Expect(hc.Status.Observations).To(HaveLen(obs.Max))
+		Expect(*hc.Status.Message).To(ContainSubstring(fmt.Sprintf("%d alerts", obs.Max+4)))
+	})
+
+	It("replaces the observations with none when a later query fails, and does not stamp lastErrorTime", func() {
+		querier.series = []map[string]string{{"alertname": "HighErrorRate", "alertstate": "pending"}}
+		hc := reconcileOnce("alertname=HighErrorRate")
+		Expect(hc.Status.Observations).To(HaveLen(1))
+		querier.err = fmt.Errorf("connection refused")
+		hc = reconcileOnce("")
+		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusPending))
+		Expect(*hc.Status.Message).To(ContainSubstring("Failed to query Prometheus: connection refused"))
+		Expect(hc.Status.Observations).To(BeEmpty())
+		Expect(hc.Status.LastErrorTime).To(BeNil())
+	})
+})
+
+type fakeSeriesQuerier struct {
+	series []map[string]string
+	err    error
+}
+
+func (f *fakeSeriesQuerier) QueryAlerts(_ context.Context, _, _ string, _, _ time.Time, _ *prometheusAuth) (*prometheusQueryResponse, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	res := &prometheusQueryResponse{Status: "success"}
+	for _, m := range f.series {
+		res.Data.Result = append(res.Data.Result, struct {
+			Metric map[string]string `json:"metric"`
+			Value  []interface{}     `json:"value"`
+			Values [][]interface{}   `json:"values"`
+		}{Metric: m, Values: [][]interface{}{{1.0, "1"}}})
+	}
+	return res, nil
+}
