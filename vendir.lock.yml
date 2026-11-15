@@ -2,10 +2,8 @@ apiVersion: vendir.k14s.io/v1alpha1
 directories:
 - contents:
   - git:
-      commitTitle: 'docs: changelog for v0.11.0'
-      sha: 6eb510a8fa040bfddf7bc44b3b0b1d1bd0b2ed4d
-      tags:
-      - v0.11.0
+      commitTitle: 'feat(healthcheck): say what is failing, and bake only while checks are Healthy (#74)'
+      sha: 1e445713587c8ab042dd40fd22e725743c038ee6
     path: kuberik
   path: vendir/crds
 kind: LockConfig

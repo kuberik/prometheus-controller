@@ -6,6 +6,6 @@ directories:
       - path: kuberik
         git:
           url: https://github.com/kuberik/rollout-controller
-          ref: v0.11.0
+          ref: 1e445713587c8ab042dd40fd22e725743c038ee6
           subPath: config/crd/bases
         newRootPath: .

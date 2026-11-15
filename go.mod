@@ -3,7 +3,7 @@ module github.com/kuberik/prometheus-controller
 go 1.25.0
 
 require (
-	github.com/kuberik/rollout-controller v0.11.0
+	github.com/kuberik/rollout-controller v0.11.1-0.20261115161626-1e445713587c
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
 	k8s.io/api v0.35.0
@@ -99,5 +99,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2-0.20260122202528-d9cc6641c482 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/kuberik/rollout-controller => /home/luka/projects/kuberik/.worktrees/rc-health-ship
