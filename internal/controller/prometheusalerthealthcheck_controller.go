@@ -267,7 +267,11 @@ func (r *PrometheusAlertHealthCheckReconciler) Reconcile(ctx context.Context, re
 		"healthStatus", healthStatus,
 		"resultCount", len(result.Data.Result))
 
-	return r.updateHealthCheckStatus(ctx, healthCheck, healthStatus, message, observations...)
+	var failures []kuberikcomv1alpha1.HealthCheckFailure
+	if healthStatus == kuberikcomv1alpha1.HealthStatusUnhealthy {
+		failures = alertFailures(activeSeries(result), alertLabels, healthCheck.Annotations, metav1.NewTime(now))
+	}
+	return r.updateHealthCheckStatusWithFailures(ctx, healthCheck, healthStatus, message, failures, observations...)
 }
 
 // getPrometheusURL extracts the Prometheus URL from HealthCheck annotations
@@ -463,6 +467,14 @@ func (r *PrometheusAlertHealthCheckReconciler) setLastScrapeTime(ctx context.Con
 
 // updateHealthCheckStatus updates the HealthCheck status
 func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *kuberikcomv1alpha1.HealthCheck, newStatus kuberikcomv1alpha1.HealthStatus, newMessage string, observations ...observation) (ctrl.Result, error) {
+	return r.updateHealthCheckStatusWithFailures(ctx, healthCheck, newStatus, newMessage, nil, observations...)
+}
+
+// updateHealthCheckStatusWithFailures is updateHealthCheckStatus plus the
+// firing alerts to record in status.failures. Recorded failures are a witness:
+// they are merged, never dropped here (a Healthy or Pending evaluation passes
+// none and leaves them untouched).
+func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatusWithFailures(ctx context.Context, healthCheck *kuberikcomv1alpha1.HealthCheck, newStatus kuberikcomv1alpha1.HealthStatus, newMessage string, failures []kuberikcomv1alpha1.HealthCheckFailure, observations ...observation) (ctrl.Result, error) {
 	now := metav1.Now()
 
 	// Work on the object we already hold: r.Update refreshed it with the new
@@ -486,6 +498,9 @@ func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx conte
 	// Update LastErrorTime if unhealthy
 	if newStatus == kuberikcomv1alpha1.HealthStatusUnhealthy {
 		latest.Status.LastErrorTime = &now
+	}
+	if len(failures) > 0 {
+		latest.Status.Failures = mergeFailures(latest.Status.Failures, failures)
 	}
 
 	// A check that could not evaluate passes an empty, non-nil list: it has
