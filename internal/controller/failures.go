@@ -26,14 +26,17 @@ func severityFromLabel(v string) kuberikcomv1alpha1.FailureSeverity {
 }
 
 // severityOverride reads the kuberik.com/severity annotation on the HealthCheck.
-// It returns false when the annotation is absent or not Critical/Warning
-// (unknown values are ignored).
+// It returns false when the annotation is absent; Warning is Warning and any
+// other value counts as Critical, as on every other object (SeverityAnnotation).
 func severityOverride(annotations map[string]string) (kuberikcomv1alpha1.FailureSeverity, bool) {
-	switch v := kuberikcomv1alpha1.FailureSeverity(annotations[kuberikcomv1alpha1.SeverityAnnotation]); v {
-	case kuberikcomv1alpha1.FailureSeverityCritical, kuberikcomv1alpha1.FailureSeverityWarning:
-		return v, true
+	v, ok := annotations[kuberikcomv1alpha1.SeverityAnnotation]
+	if !ok || v == "" {
+		return "", false
 	}
-	return "", false
+	if kuberikcomv1alpha1.FailureSeverity(v) == kuberikcomv1alpha1.FailureSeverityWarning {
+		return kuberikcomv1alpha1.FailureSeverityWarning, true
+	}
+	return kuberikcomv1alpha1.FailureSeverityCritical, true
 }
 
 // alertFailures builds one failure per FIRING alert (pending alerts are not

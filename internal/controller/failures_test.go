@@ -61,8 +61,10 @@ func TestAlertFailuresNamingSeverityAndOverride(t *testing.T) {
 		}
 	}
 	ann[kuberikcomv1alpha1.SeverityAnnotation] = "bogus"
-	if g := alertFailures(series, sel, ann, now); g[0].Severity != "Warning" {
-		t.Errorf("unknown annotation must be ignored, got %+v", g[0])
+	for _, f := range alertFailures(series, sel, ann, now) {
+		if f.Severity != "Critical" {
+			t.Errorf("an unknown annotation value counts as Critical, got %+v", f)
+		}
 	}
 }
 
