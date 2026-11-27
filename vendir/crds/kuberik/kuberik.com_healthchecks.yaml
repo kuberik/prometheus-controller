@@ -88,10 +88,12 @@ spec:
                       description: |-
                         Severity is how severe this failure is: Critical or Warning. Providers that
                         are not the kustomization check fill it from their own signal: the
-                        Prometheus alert's "severity" label (critical = Critical, warning and
-                        anything else = Warning), Datadog monitor/incident priority (P1 and P2 =
-                        Critical, P3 and lower = Warning). Empty means unmarked: the HealthCheck's
-                        kuberik.com/severity annotation applies, else Critical.
+                        Prometheus alert's "severity" label (warning = Warning; critical, missing
+                        or anything else = Critical), Datadog monitor priority and incident
+                        severity (P1/P2 and SEV-1/SEV-2 = Critical, P3-P5 and SEV-3-SEV-5 =
+                        Warning, unset = Critical). A kuberik.com/severity annotation on the
+                        HealthCheck overrides the provider's value. Empty means unmarked: the
+                        HealthCheck's annotation applies, else Critical.
                       enum:
                       - Critical
                       - Warning

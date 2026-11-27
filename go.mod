@@ -3,7 +3,7 @@ module github.com/kuberik/prometheus-controller
 go 1.27.0
 
 require (
-	github.com/kuberik/rollout-controller v0.11.1-0.20261115161626-1e445713587c
+	github.com/kuberik/rollout-controller v0.11.1-0.20261126220845-e932b696b8fe
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.44.0
 	k8s.io/api v0.37.1
@@ -106,5 +106,3 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
-
-replace github.com/kuberik/rollout-controller => /home/luka/projects/kuberik/.work/rollback-api/wt-rc
