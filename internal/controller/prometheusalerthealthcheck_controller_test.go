@@ -315,6 +315,22 @@ var _ = Describe("PrometheusAlertHealthCheck Controller", func() {
 			Expect(updatedHealthCheck.Status.Message).NotTo(BeNil())
 			Expect(*updatedHealthCheck.Status.Message).To(ContainSubstring("Alert firing"))
 			Expect(updatedHealthCheck.Status.LastErrorTime).NotTo(BeNil())
+
+			By("recording the firing alert as a Critical failure")
+			Expect(updatedHealthCheck.Status.Failures).To(HaveLen(1))
+			f := updatedHealthCheck.Status.Failures[0]
+			Expect(f.Source).To(Equal("Alert HighErrorRate"))
+			Expect(f.Kind).To(Equal(kuberikcomv1alpha1.FailureKindAlert))
+			Expect(f.Severity).To(Equal(kuberikcomv1alpha1.FailureSeverityCritical))
+
+			By("keeping the failure (witness) after the alert recovers")
+			mockQuerier.Response = &prometheusQueryResponse{Status: "success"}
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updatedHealthCheck)).To(Succeed())
+			Expect(updatedHealthCheck.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusHealthy))
+			Expect(updatedHealthCheck.Status.Failures).To(HaveLen(1))
+			Expect(updatedHealthCheck.Status.Failures[0].FirstSeenTime).To(Equal(f.FirstSeenTime))
 		})
 
 		It("should update HealthCheck status to Pending when alert is pending", func() {
@@ -967,7 +983,7 @@ var _ = Describe("PrometheusAlertHealthCheck per-alert observations", func() {
 		hc := reconcileOnce("severity=critical")
 		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
 		Expect(hc.Status.LastErrorTime).NotTo(BeNil())
-		var got []string
+		got := make([]string, 0, len(hc.Status.Observations))
 		for _, o := range hc.Status.Observations {
 			Expect(o.Healthy).NotTo(BeNil())
 			Expect(*o.Healthy).To(BeFalse())

@@ -17,6 +17,9 @@ import (
 	obs "github.com/kuberik/rollout-controller/pkg/healthcheck/observation"
 )
 
+// labelAlertName is the Prometheus label that names an alert.
+const labelAlertName = "alertname"
+
 // promRulesResponse is the response of GET /api/v1/rules?type=alert.
 type promRulesResponse struct {
 	Status string `json:"status"`
@@ -129,12 +132,12 @@ func labelsContain(have, want map[string]string) bool {
 func matchAlerts(rules []promRule, filter map[string]string) alertSnapshot {
 	var snap alertSnapshot
 	for _, r := range rules {
-		if want, ok := filter["alertname"]; ok && r.Name != want {
+		if want, ok := filter[labelAlertName]; ok && r.Name != want {
 			continue
 		}
 		conflict, needsAlert := false, false
 		for k, v := range filter {
-			if k == "alertname" {
+			if k == labelAlertName {
 				continue
 			}
 			have, ok := r.Labels[k]
@@ -149,7 +152,7 @@ func matchAlerts(rules []promRule, filter map[string]string) alertSnapshot {
 		}
 		var matched []promAlert
 		for _, a := range r.Alerts {
-			labels := map[string]string{"alertname": r.Name}
+			labels := map[string]string{labelAlertName: r.Name}
 			for k, v := range r.Labels {
 				labels[k] = v
 			}
@@ -264,7 +267,7 @@ func alertObservations(annotations, alertLabels map[string]string, snap *alertSn
 
 	name := cfg.Name
 	if name == "" {
-		name = alertLabels["alertname"]
+		name = alertLabels[labelAlertName]
 	}
 	if name == "" && snap != nil && len(snap.Rules) > 0 {
 		name = snap.Rules[0].Name
@@ -374,7 +377,7 @@ func seriesHasValueOne(value []interface{}, values [][]interface{}) bool {
 func seriesObservations(series []alertSeries, cfg observationConfig, named bool, selector map[string]string, snap *alertSnapshot, now metav1.Time) []observation {
 	out := make([]observation, 0, len(series))
 	for _, s := range series {
-		name := s.labels["alertname"]
+		name := s.labels[labelAlertName]
 		if name == "" || named {
 			name = cfg.Name
 		}
@@ -404,7 +407,7 @@ func seriesObservations(series []alertSeries, cfg observationConfig, named bool,
 
 		rest := map[string]string{}
 		for k, v := range s.labels {
-			if _, inSelector := selector[k]; !inSelector && k != "alertname" {
+			if _, inSelector := selector[k]; !inSelector && k != labelAlertName {
 				rest[k] = v
 			}
 		}
