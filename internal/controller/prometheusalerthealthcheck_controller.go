@@ -192,21 +192,21 @@ func (r *PrometheusAlertHealthCheckReconciler) Reconcile(ctx context.Context, re
 	prometheusURL, err := r.getPrometheusURL(healthCheck)
 	if err != nil {
 		log.Error(err, "Failed to get Prometheus URL")
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, err.Error(), []observation{}...)
+		return r.updatePendingStatus(ctx, healthCheck, err.Error(), []observation{}...)
 	}
 
 	// Get alert labels from annotations
 	alertLabels, err := r.getAlertLabels(healthCheck)
 	if err != nil {
 		log.Error(err, "Failed to get alert labels")
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, err.Error(), []observation{}...)
+		return r.updatePendingStatus(ctx, healthCheck, err.Error(), []observation{}...)
 	}
 
 	// Get optional credentials
 	auth, err := r.getCredentials(ctx, healthCheck)
 	if err != nil {
 		log.Error(err, "Failed to get Prometheus credentials")
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, fmt.Sprintf("Failed to get credentials: %v", err), []observation{}...)
+		return r.updatePendingStatus(ctx, healthCheck, fmt.Sprintf("Failed to get credentials: %v", err), []observation{}...)
 	}
 
 	// Build the ALERTS query from labels
@@ -231,7 +231,7 @@ func (r *PrometheusAlertHealthCheckReconciler) Reconcile(ctx context.Context, re
 	if err != nil {
 		log.Error(err, "Failed to query Prometheus", "query", query)
 		errMsg := fmt.Sprintf("Failed to query Prometheus: %v", err)
-		return r.updateHealthCheckStatus(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, errMsg, []observation{}...)
+		return r.updatePendingStatus(ctx, healthCheck, errMsg, []observation{}...)
 	}
 
 	// Update last scrape time
@@ -465,9 +465,9 @@ func (r *PrometheusAlertHealthCheckReconciler) setLastScrapeTime(ctx context.Con
 	return r.Update(ctx, healthCheck)
 }
 
-// updateHealthCheckStatus updates the HealthCheck status
-func (r *PrometheusAlertHealthCheckReconciler) updateHealthCheckStatus(ctx context.Context, healthCheck *kuberikcomv1alpha1.HealthCheck, newStatus kuberikcomv1alpha1.HealthStatus, newMessage string, observations ...observation) (ctrl.Result, error) {
-	return r.updateHealthCheckStatusWithFailures(ctx, healthCheck, newStatus, newMessage, nil, observations...)
+// updatePendingStatus marks the HealthCheck Pending: the check could not be evaluated, so it records no failures.
+func (r *PrometheusAlertHealthCheckReconciler) updatePendingStatus(ctx context.Context, healthCheck *kuberikcomv1alpha1.HealthCheck, newMessage string, observations ...observation) (ctrl.Result, error) {
+	return r.updateHealthCheckStatusWithFailures(ctx, healthCheck, kuberikcomv1alpha1.HealthStatusPending, newMessage, nil, observations...)
 }
 
 // updateHealthCheckStatusWithFailures is updateHealthCheckStatus plus the

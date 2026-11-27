@@ -983,7 +983,7 @@ var _ = Describe("PrometheusAlertHealthCheck per-alert observations", func() {
 		hc := reconcileOnce("severity=critical")
 		Expect(hc.Status.Status).To(Equal(kuberikcomv1alpha1.HealthStatusUnhealthy))
 		Expect(hc.Status.LastErrorTime).NotTo(BeNil())
-		var got []string
+		got := make([]string, 0, len(hc.Status.Observations))
 		for _, o := range hc.Status.Observations {
 			Expect(o.Healthy).NotTo(BeNil())
 			Expect(*o.Healthy).To(BeFalse())
