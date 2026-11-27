@@ -51,7 +51,7 @@ func alertFailures(series []alertSeries, selector, annotations map[string]string
 	distinguishing := func(s alertSeries) map[string]string {
 		out := map[string]string{}
 		for k, v := range s.labels {
-			if _, inSelector := selector[k]; inSelector || k == "alertname" || k == "severity" {
+			if _, inSelector := selector[k]; inSelector || k == labelAlertName || k == "severity" {
 				continue
 			}
 			out[k] = v
@@ -59,7 +59,7 @@ func alertFailures(series []alertSeries, selector, annotations map[string]string
 		return out
 	}
 	nameOf := func(s alertSeries) string {
-		if n := s.labels["alertname"]; n != "" {
+		if n := s.labels[labelAlertName]; n != "" {
 			return n
 		}
 		return "unnamed"
